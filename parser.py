@@ -222,8 +222,8 @@ class ForumParser:
         self.downloaded_files[norm] = local_path
         return local_path
 
-    def download_image(self, url: str) -> Path | None:
-        """Download an image (possibly external) and return local path."""
+    def download_asset(self, url: str) -> Path | None:
+        """Download an asset (possibly external) and return its local path."""
         norm = normalize_url(url)
         if norm in self.downloaded_files:
             return self.downloaded_files[norm]
@@ -251,7 +251,7 @@ class ForumParser:
         if not local_path.exists():
             with open(local_path, "wb") as f:
                 f.write(resp.content)
-            log.debug("Downloaded image: %s -> %s", url, local_path)
+            log.debug("Downloaded asset: %s -> %s", url, local_path)
 
         self.downloaded_files[norm] = local_path
         return local_path
@@ -354,7 +354,7 @@ class ForumParser:
                 continue
 
             # Download user-content images (may be external)
-            local_img = self.download_image(abs_src)
+            local_img = self.download_asset(abs_src)
             if local_img:
                 tag["src"] = self.make_relative(local_path, local_img)
                 time.sleep(self.delay * 0.2)
@@ -364,7 +364,7 @@ class ForumParser:
             abs_href = urljoin(url, tag["href"])
             parsed = urlparse(abs_href)
             if parsed.netloc in ("", "visio.getbb.ru", "www.visio.getbb.ru"):
-                local_asset = self.download_image(abs_href)
+                local_asset = self.download_asset(abs_href)
                 if local_asset:
                     tag["href"] = self.make_relative(local_path, local_asset)
 
@@ -373,7 +373,7 @@ class ForumParser:
             abs_src = urljoin(url, tag["src"])
             parsed = urlparse(abs_src)
             if parsed.netloc in ("", "visio.getbb.ru", "www.visio.getbb.ru"):
-                local_asset = self.download_image(abs_src)
+                local_asset = self.download_asset(abs_src)
                 if local_asset:
                     tag["src"] = self.make_relative(local_path, local_asset)
 
