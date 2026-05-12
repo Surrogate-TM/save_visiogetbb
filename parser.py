@@ -79,8 +79,12 @@ def url_to_local_path(url: str, output_dir: Path) -> Path:
         path = "index.html"
     elif path.endswith("/"):
         path = path + "index.html"
-    elif not os.path.splitext(path)[1]:
-        path = path + ".html"
+    else:
+        base, ext = os.path.splitext(path)
+        if ext == ".php":
+            path = base + ".html"
+        elif not ext:
+            path = path + ".html"
 
     if query:
         # Encode query string into filename safely

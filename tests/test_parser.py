@@ -25,7 +25,7 @@ def test_url_to_local_path_preserves_query_in_filename(tmp_path):
         tmp_path,
     )
 
-    assert path == tmp_path / "viewtopic__f=3&t=1571&start=40.php"
+    assert path == tmp_path / "viewtopic__f=3&t=1571&start=40.html"
 
 
 def test_detect_extension_prefers_content_disposition_filename():
@@ -63,7 +63,7 @@ def test_process_page_rewrites_forum_links_and_downloads_assets(tmp_path):
 
     processed = parser.process_page("https://visio.getbb.ru/viewtopic.php?t=1", html)
 
-    assert 'href="viewforum__f=3.php"' in processed
+    assert 'href="viewforum__f=3.html"' in processed
     assert 'href="#"' in processed
     assert 'href="download/file_7.7z"' in processed
     assert 'src="images_cache/example_com/image.png"' in processed
