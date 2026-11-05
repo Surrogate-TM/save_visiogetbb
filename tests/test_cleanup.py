@@ -1,4 +1,5 @@
 """Tests for issue #13: remove forum chrome from saved HTML pages."""
+import json
 import os
 import sys
 import tempfile
@@ -211,6 +212,37 @@ class TestForumChromeCleanup(unittest.TestCase):
         self.assertIsNone(soup.find(id="wrapfooter"))
         self.assertIsNone(soup.find("p", class_="datetime"))
 
+    def test_removes_topic_print_previous_and_next_navigation(self):
+        html = """<html><body><div id="pagecontent"><table><tr>
+        <td class="nav"><a href="./viewtopic.php?f=2&amp;t=40&amp;view=print">Для печати</a></td>
+        <td class="nav"><a href="./viewtopic.php?f=2&amp;t=40&amp;view=previous">Пред. тема</a> |
+        <a href="./viewtopic.php?f=2&amp;t=40&amp;view=next">След. тема</a></td>
+        </tr></table><div class="postbody">Useful post</div></div></body></html>"""
+
+        result = self.parser.process_page(
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40", html
+        )
+        soup = BeautifulSoup(result, "html.parser")
+
+        self.assertNotIn("Для печати", soup.get_text(" "))
+        self.assertNotIn("Пред. тема", soup.get_text(" "))
+        self.assertNotIn("След. тема", soup.get_text(" "))
+        self.assertIn("Useful post", soup.get_text(" "))
+
+    def test_removes_topic_permissions_footer_table(self):
+        html = """<html><body><div id="pagecontent"><div class="postbody">Useful post</div></div>
+        <table cellspacing="1" width="100%"><tr><td></td><td><span class="gensmall">
+        Вы <strong>не можете</strong> начинать темы<br/>Вы <strong>не можете</strong> отвечать на сообщения<br/>
+        Вы <strong>не можете</strong> добавлять вложения</span></td></tr></table></body></html>"""
+
+        result = self.parser.process_page(
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40", html
+        )
+        soup = BeautifulSoup(result, "html.parser")
+
+        self.assertNotIn("не можете", soup.get_text(" "))
+        self.assertIn("Useful post", soup.get_text(" "))
+
     def test_viewforum_footer_junk_removed(self):
         result = self.parser.process_page(
             "https://visio.getbb.ru/viewforum.php?f=29",
@@ -281,6 +313,76 @@ class TestForumChromeCleanup(unittest.TestCase):
                 Path(self.tempdir.name)
                 / "viewtopic__f=29&t=236.html"
             ).exists()
+        )
+
+
+class TestTopicUrlCanonicalization(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.parser = ForumParser(output_dir=self.tempdir.name)
+        self.parser.download_image = MagicMock(return_value=None)
+        self.parser.download_file = MagicMock(return_value=None)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_topic_variants_normalize_to_one_url(self):
+        expected = "https://visio.getbb.ru/viewtopic.php?f=2&t=40"
+        variants = [
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40&p=181",
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40&view=print",
+        ]
+
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertEqual(normalize_url(variant), expected)
+
+    def test_post_permalink_becomes_anchor_and_is_not_enqueued(self):
+        html = """<html><body><div id="pagecontent"><table><tr>
+        <td><a name="p178"></a><a href="./viewtopic.php?p=178#p178"><img alt="Сообщение" src="target.gif"/></a></td>
+        </tr></table></div></body></html>"""
+
+        result = self.parser.process_page(
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40", html
+        )
+        soup = BeautifulSoup(result, "html.parser")
+
+        self.assertEqual(soup.find("a", href=True)["href"], "#p178")
+        self.assertEqual(list(self.parser.queue), [])
+
+    def test_post_permalink_without_fragment_uses_post_id_anchor(self):
+        html = '<html><body><a name="p181"></a><a href="./viewtopic.php?f=2&amp;t=40&amp;p=181">quoted post</a></body></html>'
+
+        result = self.parser.process_page(
+            "https://visio.getbb.ru/viewtopic.php?f=2&t=40", html
+        )
+        soup = BeautifulSoup(result, "html.parser")
+
+        self.assertEqual(soup.find("a", href=True)["href"], "#p181")
+
+    def test_quote_of_post_on_another_page_links_to_that_page(self):
+        # Issue #17 comment: p=12770 lives on t=1398&start=20, not the quoting topic.
+        target = Path(self.tempdir.name) / "viewtopic__f=5&t=1398&start=20.html"
+        target.write_text('<html><body><a name="p12770"></a>post</body></html>', encoding="utf-8")
+        html = '<html><body><a name="p1"></a><a href="./viewtopic.php?p=12770#p12770">quote</a></body></html>'
+        quoting_url = "https://visio.getbb.ru/viewtopic.php?f=2&t=40"
+        quoting = url_to_local_path(quoting_url, Path(self.tempdir.name))
+        quoting.write_text(self.parser.process_page(quoting_url, html), encoding="utf-8")
+
+        self.assertEqual(self.parser.resolve_post_links(), 1)
+
+        soup = BeautifulSoup(quoting.read_text(encoding="utf-8"), "html.parser")
+        self.assertEqual(soup.find("a", href=True)["href"], "viewtopic__f=5&t=1398&start=20.html#p12770")
+        index = json.loads((Path(self.tempdir.name) / "posts.json").read_text(encoding="utf-8"))
+        self.assertEqual(index["12770"], "https://visio.getbb.ru/viewtopic.php?f=5&t=1398&start=20")
+        self.assertEqual(index["1"], quoting_url)
+
+    def test_unarchived_cross_page_post_keeps_online_url(self):
+        html = '<html><body><a href="./viewtopic.php?p=999">quote</a></body></html>'
+        result = self.parser.process_page("https://visio.getbb.ru/viewtopic.php?f=2&t=40", html)
+        self.assertEqual(
+            BeautifulSoup(result, "html.parser").find("a")["href"],
+            "https://visio.getbb.ru/viewtopic.php?p=999#p999",
         )
 
 
@@ -662,6 +764,44 @@ class TestJsonExport(unittest.TestCase):
         ]
         self.assertTrue(len(all_posts) > 0, "Should find at least one post")
         self.assertIn("Текст первого поста", all_posts[0]["text"])
+
+
+class TestTopicHeader(unittest.TestCase):
+    """Issue #17: page navigation and post permalink labels."""
+
+    PAGE_2 = """<div id="pagecontent"><table><tr>
+<td class="nav">&nbsp;Страница <strong>2</strong> из <strong>2</strong><br /></td>
+<td class="gensmall">&nbsp;[ Сообщений: 35 ]&nbsp;</td>
+<td class="gensmall"><b><a href="#" onclick="jumpto(); return false;">На страницу</a> <a href="./viewtopic.php?f=2&amp;t=1129&amp;start=0">Пред.</a>&nbsp;&nbsp;<a href="./viewtopic.php?f=2&amp;t=1129">1</a><span class="page-sep">, </span><strong>2</strong></b></td>
+</tr></table></div>"""
+
+    PAGE_1 = """<div id="pagecontent"><table><tr>
+<td class="gensmall"><b><a href="#" onclick="jumpto(); return false;">На страницу</a> <strong>1</strong><span class="page-sep">, </span><a href="./viewtopic.php?f=2&amp;t=1129&amp;start=20">2</a> &nbsp;<a href="./viewtopic.php?f=2&amp;t=1129&amp;start=20">След.</a></b></td>
+</tr></table></div>"""
+
+    POST = """<div id="pagecontent"><table><tr>
+<td class="gensmall"><div style="float: right;"><a href="./viewtopic.php?p=9845#p9845"><img src="./styles/subsilver2-modded/imageset/icon_post_target.gif" alt="Сообщение" title="Сообщение" /></a><b>Добавлено:</b> 27 сен 2016, 01:32&nbsp;</div></td>
+</tr></table></div>"""
+
+    def _clean(self, html):
+        soup = BeautifulSoup(html, "html.parser")
+        _remove_forum_chrome(soup)
+        return soup
+
+    def test_step_links_removed_and_page_numbers_kept(self):
+        for html, number in ((self.PAGE_1, "2"), (self.PAGE_2, "1")):
+            soup = self._clean(html)
+            texts = [a.get_text() for a in soup.find_all("a")]
+            self.assertEqual(texts, [number])
+            for label in ("На страницу", "Пред.", "След."):
+                self.assertNotIn(label, soup.get_text())
+
+    def test_permalink_shows_post_number(self):
+        soup = self._clean(self.POST)
+        img = soup.find("img")
+        self.assertEqual(img["alt"], "#p9845")
+        self.assertEqual(img["title"], "#p9845")
+        self.assertEqual(soup.find("b").get_text(), "\u00a0\u00a0Добавлено:")
 
 
 if __name__ == "__main__":
